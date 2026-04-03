@@ -43,7 +43,7 @@ class PageSnapshot(BaseModel):
     depth: int
     status: int | None
     head: str
-    nav_links: list[dict[str, str]]
+    nav_links: list[dict[str, Any]]
     all_links: list[dict[str, str]]
     scripts: list[str]
     styles: list[str]
@@ -53,6 +53,8 @@ class PageSnapshot(BaseModel):
     meta: dict[str, Any]
     performance: dict[str, Any]
     screenshot: str | None = None
+    body_content: list[dict[str, Any]] = []
+    images: list[dict[str, Any]] = []
 
 
 def ensure_audit_dirs(project_dir: Path) -> dict[str, Path]:
@@ -420,12 +422,37 @@ def collect_page_snapshot(page: Any, *, current_url: str, depth: int) -> dict[st
             depth,
             title: document.title,
             head: document.head.innerHTML,
-            navLinks: Array.from(document.querySelectorAll('nav a, header a, [role=navigation] a'))
-              .map((a) => ({
-                text: pickText(a.textContent),
-                href: a.href || ''
-              }))
-              .filter((link) => link.href),
+            navLinks: (() => {
+              const links = [];
+              const seen = new Set();
+              const gnbSels = [
+                'header > nav > ul > li > a',
+                'header > nav > a',
+                'header .gnb > ul > li > a',
+                '#gnb > ul > li > a',
+                '.header_menu > ul > li > a',
+                'header > div > nav > ul > li > a',
+                'header > div > ul > li > a',
+                '.nav_wrap > ul > li > a',
+              ];
+              gnbSels.forEach(sel => {
+                document.querySelectorAll(sel).forEach(a => {
+                  const href = a.href || '';
+                  if (href && !seen.has(href)) {
+                    seen.add(href);
+                    links.push({ text: pickText(a.textContent), href, level: 'gnb' });
+                  }
+                });
+              });
+              document.querySelectorAll('nav a, header a, [role=navigation] a').forEach(a => {
+                const href = a.href || '';
+                if (href && !seen.has(href)) {
+                  seen.add(href);
+                  links.push({ text: pickText(a.textContent), href, level: 'sub' });
+                }
+              });
+              return links;
+            })(),
             allLinks: Array.from(document.querySelectorAll('a[href]'))
               .map((a) => ({
                 text: pickText(a.textContent),
@@ -457,7 +484,37 @@ def collect_page_snapshot(page: Any, *, current_url: str, depth: int) -> dict[st
               canonical: document.querySelector('link[rel=canonical]')?.href || '',
               h1: Array.from(document.querySelectorAll('h1')).map((el) => pickText(el.textContent)),
               h2: Array.from(document.querySelectorAll('h2')).map((el) => pickText(el.textContent))
-            }
+            },
+            bodyContent: (() => {
+              const sections = [];
+              const area = document.querySelector(
+                'main, #content, .content, .sub_content, .sub_wrap, article, [role=main]'
+              ) || document.body;
+              area.querySelectorAll('h1,h2,h3,h4,h5,h6,p,li,td,th,dt,dd,figcaption,blockquote')
+                .forEach(el => {
+                  const text = (el.textContent || '').replace(/\\s+/g, ' ').trim();
+                  if (text && text.length > 2) {
+                    sections.push({
+                      tag: el.tagName,
+                      text: text.substring(0, 800),
+                      className: el.className || '',
+                      parentTag: el.parentElement?.tagName || ''
+                    });
+                  }
+                });
+              return sections.slice(0, 150);
+            })(),
+            images: Array.from(document.querySelectorAll('img[src]'))
+              .map(img => ({
+                src: img.src,
+                alt: img.alt || '',
+                width: img.naturalWidth || img.width || 0,
+                height: img.naturalHeight || img.height || 0,
+                className: img.className || '',
+                parentTag: img.parentElement?.tagName || ''
+              }))
+              .filter(img => img.width > 30 && img.height > 30)
+              .slice(0, 50)
           };
         }
         """,
@@ -532,6 +589,53 @@ def render_client_brief(
 """
 
 
+def download_page_images(
+    images: list[dict[str, Any]],
+    save_dir: Path,
+    origin: str,
+    *,
+    timeout: float = 15.0,
+) -> list[dict[str, Any]]:
+    """페이지에서 수집한 이미지 URL을 실제 파일로 다운로드합니다."""
+    save_dir.mkdir(parents=True, exist_ok=True)
+    results: list[dict[str, Any]] = []
+
+    for i, img in enumerate(images):
+        src = img.get("src", "")
+        if not src or src.startswith("data:"):
+            continue
+        try:
+            resp = httpx.get(src, timeout=timeout, follow_redirects=True)
+            if resp.status_code != 200:
+                continue
+
+            ct = resp.headers.get("content-type", "")
+            ext = ".jpg"
+            if "png" in ct:
+                ext = ".png"
+            elif "svg" in ct:
+                ext = ".svg"
+            elif "webp" in ct:
+                ext = ".webp"
+            elif "gif" in ct:
+                ext = ".gif"
+
+            filename = f"{i+1:03d}_{slugify_url(src)[:60]}{ext}"
+            filepath = save_dir / filename
+            filepath.write_bytes(resp.content)
+
+            results.append({
+                **img,
+                "localPath": str(filepath),
+                "filename": filename,
+                "size": len(resp.content),
+            })
+        except Exception:
+            continue
+
+    return results
+
+
 @app.command()
 def doctor() -> None:
     """현재 런타임 설치 상태를 점검합니다."""
@@ -588,8 +692,8 @@ def load_sitemap_urls(origin: str, max_urls: int = 20) -> list[str]:
 def crawl(
     url: str = typer.Argument(..., help="수집할 공개 URL"),
     project_dir: Path = typer.Option(Path("."), help="대상 프로젝트 루트"),
-    max_pages: int = typer.Option(8, min=1, max=50, help="최대 수집 페이지 수"),
-    max_depth: int = typer.Option(2, min=0, max=5, help="링크 탐색 깊이"),
+    max_pages: int = typer.Option(50, min=1, max=200, help="최대 수집 페이지 수"),
+    max_depth: int = typer.Option(3, min=0, max=5, help="링크 탐색 깊이"),
     delay_ms: int = typer.Option(1000, min=0, max=10000, help="페이지 간 대기 시간(ms)"),
     use_sitemap: bool = typer.Option(True, help="sitemap.xml에서 추가 URL을 탐지합니다"),
 ) -> None:
@@ -665,6 +769,15 @@ def crawl(
                     """
                 )
 
+                # 이미지 실제 다운로드
+                downloaded_images: list[dict[str, Any]] = []
+                if snapshot.get("images"):
+                    page_slug = slugify_url(current_url)
+                    img_dir = paths["audit"] / "images" / page_slug
+                    downloaded_images = download_page_images(
+                        snapshot["images"], img_dir, origin
+                    )
+
                 page_snapshot = PageSnapshot(
                     url=current_url,
                     title=snapshot["title"],
@@ -681,6 +794,8 @@ def crawl(
                     meta=snapshot["meta"],
                     performance=performance,
                     screenshot=f"_audit/screenshots/{screenshot_name}",
+                    body_content=snapshot.get("bodyContent", []),
+                    images=downloaded_images or snapshot.get("images", []),
                 )
                 pages.append(page_snapshot.model_dump())
                 visited.add(current_url)
@@ -914,18 +1029,31 @@ def ia_scan(
     ]
     site_pages.sort(key=lambda item: (item["depth"], item["url"]))
 
-    nav_counter: Counter[tuple[str, str]] = Counter()
+    gnb_counter: Counter[tuple[str, str]] = Counter()
+    sub_counter: Counter[tuple[str, str]] = Counter()
     for page in pages:
         for link in page.get("nav_links", []):
             text = link.get("text", "").strip()
             href = link.get("href", "").strip()
+            level = link.get("level", "sub")
             if text and href:
-                nav_counter.update({(text, href): 1})
+                if level == "gnb":
+                    gnb_counter.update({(text, href): 1})
+                else:
+                    sub_counter.update({(text, href): 1})
 
-    top_nav = [
-        {"text": text, "href": href, "count": count}
-        for (text, href), count in nav_counter.most_common(12)
-    ]
+    # GNB가 감지되면 GNB만, 아니면 기존 방식(전체 빈도순) 폴백
+    if gnb_counter:
+        top_nav = [
+            {"text": text, "href": href, "count": count}
+            for (text, href), count in gnb_counter.most_common(20)
+        ]
+    else:
+        all_counter = gnb_counter + sub_counter
+        top_nav = [
+            {"text": text, "href": href, "count": count}
+            for (text, href), count in all_counter.most_common(12)
+        ]
 
     summary = {
         "siteName": read_target_name(resolved),
@@ -1426,6 +1554,200 @@ def report_draft(
 
     console.print(f"report draft saved: {report_path}")
     console.print(f"client brief saved: {brief_path}")
+
+
+@app.command("content-export")
+def content_export(
+    project_dir: Path = typer.Option(Path("."), help="대상 프로젝트 루트"),
+) -> None:
+    """수집된 데이터를 카테고리별 폴더로 정리하여 AI 에이전트 참고용 마크다운으로 저장합니다."""
+
+    resolved = project_dir.resolve()
+    paths = ensure_audit_dirs(resolved)
+    pages: list[dict[str, Any]] = load_json(paths["derived"] / "pages.json", [])
+    ia_summary: dict[str, Any] = load_json(paths["derived"] / "ia-summary.json", {})
+
+    if not pages:
+        raise typer.BadParameter("먼저 webstart-audit crawl 을 실행하세요.")
+
+    main_nav = ia_summary.get("mainNavigation", [])
+    contents_dir = paths["audit"] / "contents"
+    contents_dir.mkdir(parents=True, exist_ok=True)
+
+    # GNB 카테고리 → URL 경로 패턴 매핑
+    categories: list[dict[str, Any]] = []
+    for i, nav_item in enumerate(main_nav):
+        gnb_href = nav_item.get("href", "")
+        gnb_text = nav_item.get("text", f"category_{i+1}")
+        parsed_gnb = urlparse(gnb_href)
+        # URL 경로에서 카테고리 디렉토리를 추출 (예: /pages/retina/retina_1.php → retina)
+        path_parts = [p for p in parsed_gnb.path.split("/") if p]
+        cat_key = path_parts[-2] if len(path_parts) >= 2 else path_parts[-1] if path_parts else ""
+        safe_name = re.sub(r'[\\/:*?"<>|·]', '_', gnb_text).strip('_ ')
+        folder_name = f"{i+1:02d}_{safe_name}"
+        categories.append({
+            "order": i + 1,
+            "name": gnb_text,
+            "gnbHref": gnb_href,
+            "catKey": cat_key,
+            "folderName": folder_name,
+            "pages": [],
+        })
+
+    # 각 페이지를 카테고리에 매핑
+    uncategorized: list[dict[str, Any]] = []
+    for page_data in pages:
+        page_url = page_data.get("url", "")
+        parsed_page = urlparse(page_url)
+        page_parts = [p for p in parsed_page.path.split("/") if p]
+
+        matched = False
+        for cat in categories:
+            if cat["catKey"] and cat["catKey"] in page_parts:
+                cat["pages"].append(page_data)
+                matched = True
+                break
+
+        if not matched:
+            uncategorized.append(page_data)
+
+    # 미분류 페이지를 별도 카테고리로
+    if uncategorized:
+        categories.append({
+            "order": len(categories) + 1,
+            "name": "기타",
+            "gnbHref": "",
+            "catKey": "",
+            "folderName": f"{len(categories)+1:02d}_기타",
+            "pages": uncategorized,
+        })
+
+    index_data: dict[str, Any] = {
+        "siteName": ia_summary.get("siteName", ""),
+        "url": ia_summary.get("url", ""),
+        "exportedAt": date.today().isoformat(),
+        "categories": [],
+        "totalPages": 0,
+        "totalImages": 0,
+    }
+
+    for cat in categories:
+        if not cat["pages"]:
+            continue
+
+        cat_dir = contents_dir / cat["folderName"]
+        cat_dir.mkdir(parents=True, exist_ok=True)
+
+        cat_index: dict[str, Any] = {
+            "order": cat["order"],
+            "name": cat["name"],
+            "gnbHref": cat["gnbHref"],
+            "pages": [],
+        }
+
+        for page_data in cat["pages"]:
+            page_url = page_data.get("url", "")
+            page_title = page_data.get("title", "")
+            parsed_p = urlparse(page_url)
+            page_filename_parts = [p for p in parsed_p.path.split("/") if p]
+            page_stem = page_filename_parts[-1].replace(".php", "").replace(".html", "").replace(".htm", "") if page_filename_parts else "index"
+
+            # 본문 콘텐츠를 AI 최적 마크다운으로 변환
+            body_content = page_data.get("body_content", [])
+            page_images = page_data.get("images", [])
+            meta = page_data.get("meta", {})
+
+            # 태그 시퀀스 생성
+            tag_sequence = " > ".join(item.get("tag", "") for item in body_content[:30])
+
+            # 본문 텍스트를 계층 구조로 변환
+            content_lines: list[str] = []
+            for item in body_content:
+                tag = item.get("tag", "")
+                text = item.get("text", "").strip()
+                if not text:
+                    continue
+                if tag == "H1":
+                    content_lines.append(f"\n### {text}")
+                elif tag == "H2":
+                    content_lines.append(f"\n### {text}")
+                elif tag == "H3":
+                    content_lines.append(f"\n#### {text}")
+                elif tag in ("H4", "H5", "H6"):
+                    content_lines.append(f"\n##### {text}")
+                elif tag == "LI":
+                    content_lines.append(f"- {text}")
+                elif tag in ("TD", "TH"):
+                    content_lines.append(f"| {text} |")
+                else:
+                    content_lines.append(text)
+
+            body_text = "\n".join(content_lines) if content_lines else "(본문 콘텐츠 없음)"
+
+            # 이미지 테이블
+            img_table = ""
+            if page_images:
+                img_rows = []
+                for j, img in enumerate(page_images):
+                    fname = img.get("filename", img.get("src", "").split("/")[-1][:50])
+                    alt = img.get("alt", "")[:40]
+                    w = img.get("width", 0)
+                    h = img.get("height", 0)
+                    img_rows.append(f"| {j+1} | {fname} | {alt} | {w}×{h} |")
+                img_table = "| # | 파일명 | alt | 크기 |\n|---|--------|-----|------|\n" + "\n".join(img_rows)
+
+            # 마크다운 파일 생성
+            h1_list = meta.get("h1", [])
+            display_title = h1_list[0] if h1_list else page_title or page_stem
+
+            md_content = f"""---
+url: {page_url}
+category: {cat['name']}
+title: {display_title}
+crawled_at: {date.today().isoformat()}
+image_count: {len(page_images)}
+---
+
+# {display_title}
+
+## 페이지 메타
+- **카테고리:** {cat['name']}
+- **URL 경로:** {parsed_p.path}
+- **페이지 title:** {page_title}
+- **meta description:** {meta.get('description', '')}
+
+## 콘텐츠 구조
+
+{body_text}
+
+## 이미지 목록
+{img_table if img_table else '(이미지 없음)'}
+
+## 원본 HTML 태그 시퀀스
+{tag_sequence if tag_sequence else '(태그 시퀀스 없음)'}
+"""
+
+            # 파일명에 제목 힌트 추가
+            safe_title = re.sub(r'[\\/:*?"<>|]', '_', display_title)[:30].strip('_ ')
+            md_filename = f"{page_stem}_{safe_title}.md" if safe_title else f"{page_stem}.md"
+            md_path = cat_dir / md_filename
+            md_path.write_text(md_content, encoding="utf-8")
+
+            cat_index["pages"].append({
+                "file": md_filename,
+                "title": display_title,
+                "imageCount": len(page_images),
+            })
+            index_data["totalPages"] += 1
+            index_data["totalImages"] += len(page_images)
+
+        index_data["categories"].append(cat_index)
+
+    # _index.json 저장
+    write_json(contents_dir / "_index.json", index_data)
+
+    console.print(f"content export 완료: {contents_dir}")
+    console.print(f"카테고리 {len(index_data['categories'])}개, 페이지 {index_data['totalPages']}개, 이미지 {index_data['totalImages']}개")
 
 
 if __name__ == "__main__":
