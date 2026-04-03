@@ -45,11 +45,13 @@
 
 | 항목 | 확인 방법 | 설치 명령 |
 |------|----------|----------|
-| Node.js 18+ | `node --version` | https://nodejs.org |
+| Node.js 18+ (`Claude Code` 모드) | `node --version` | https://nodejs.org |
 | Python 3.10+ (고급 검수 런타임) | `python3 --version` | https://python.org |
-| Claude Code CLI | `claude --version` | `npm install -g @anthropic-ai/claude-code` |
+| Claude Code CLI (`Claude Code` 모드) | `claude --version` | `npm install -g @anthropic-ai/claude-code` |
 | Playwright (검수 파이프라인 필수) | `~/.webstart/bin/webstart-audit doctor` | `install.sh`가 공용 audit runtime과 함께 설치 |
 | Git | `git --version` | https://git-scm.com |
+
+Codex 모드로만 쓸 경우에는 `bash install.sh --agent codex`를 사용하면 되고, Claude Code CLI는 필요하지 않다.
 
 ---
 
@@ -62,7 +64,7 @@
 git clone https://github.com/본인계정/WebStart.git
 cd WebStart
 
-# 2. 스킬 설치 (13개 스킬을 ~/.claude/skills/에 복사)
+# 2. 스킬 설치 (선택한 agent의 skills를 해당 홈 디렉토리의 skills/에 복사)
 bash install.sh
 
 # 3. install.sh 는 공용 audit runtime(~/.webstart)도 함께 설치합니다.
@@ -81,6 +83,15 @@ cd WebStart
 git pull
 bash install.sh
 ```
+
+### Codex로 설치하기
+
+```bash
+cd WebStart
+bash install.sh --agent codex
+```
+
+Codex 모드에서는 `CODEX-GUIDE.md`와 `CODEX-MAPPING.md`를 먼저 확인하면 된다.
 
 ### 설치 확인
 
@@ -492,6 +503,23 @@ claude.ai 웹에서 제작 파이프라인을 사용하려면 아래 Projects를
 - 한자 사용 금지
 ```
 
+## Codex 설정 (선택)
+
+Codex에서는 Claude Code용 slash command 대신 Codex용 가이드와 대응표를 기준으로 작업한다.
+
+```bash
+cd WebStart
+bash install.sh --agent codex
+```
+
+읽을 문서:
+
+- [CODEX-GUIDE.md](./CODEX-GUIDE.md)
+- [CODEX-MAPPING.md](./CODEX-MAPPING.md)
+- [CODEX-QUICKSTART.md](./CODEX-QUICKSTART.md)
+
+Claude Code용 문서와 충돌하지 않도록 Codex 쪽은 별도 호환 레이어로 유지한다.
+
 ---
 
 ## 문제 해결
@@ -508,7 +536,8 @@ claude.ai 웹에서 제작 파이프라인을 사용하려면 아래 Projects를
 
 ```bash
 # 스킬 파일 위치 확인
-ls ~/.claude/skills/
+ls ~/.claude/skills/   # Claude Code
+ls ~/.codex/skills/    # Codex
 
 # 재설치
 cd WebStart
@@ -543,6 +572,9 @@ cat _audit/status.md    # 검수 파이프라인
 | [IMPROVEMENT-REPORT.md](./IMPROVEMENT-REPORT.md) | 후속 개선점 정리 |
 | [REVIEW-REPORT.md](./REVIEW-REPORT.md) | 1차 전수 검토 결과(역사) |
 | [REVIEW-REPORT-V2.md](./REVIEW-REPORT-V2.md) | 2차 전수 검토 결과(현행) |
+| [CODEX-GUIDE.md](./CODEX-GUIDE.md) | Codex용 운영 가이드 |
+| [CODEX-MAPPING.md](./CODEX-MAPPING.md) | Claude ↔ Codex 대응표 |
+| [CODEX-QUICKSTART.md](./CODEX-QUICKSTART.md) | Codex 빠른 시작 |
 | [SESSION-REPORT.md](./SESSION-REPORT.md) | 세션 작업 기록 |
 
 위 다섯 문서는 사용자 사용 설명서가 아니라 repo 내부 의사결정과 작업 기록용 문서로 유지합니다.

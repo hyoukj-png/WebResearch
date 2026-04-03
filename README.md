@@ -15,7 +15,7 @@
 
 - 총 13개 스킬로 구성됩니다.
 - 제작 파이프라인 8개, 검수 파이프라인 5개입니다.
-- Claude Code CLI 기준으로 설계되었습니다.
+- 기본은 Claude Code CLI 기준이지만, Codex 모드도 함께 지원합니다.
 - 검수 파이프라인은 공용 `audit runtime`을 사용합니다.
 - 설치는 기본적으로 `bash install.sh` 한 번으로 끝납니다.
 
@@ -123,10 +123,11 @@ WebStart는 이 문제를 파이프라인으로 해결합니다.
 
 ### 요구 사항
 
-- Node.js 18+
+- Node.js 18+ (`Claude Code` 모드만 필요)
 - Python 3.10+
 - Git
-- Claude Code CLI
+- Claude Code CLI (`Claude Code` 모드만 필요)
+- Codex는 `bash install.sh --agent codex`로 설치하며, Claude CLI는 필요하지 않습니다.
 
 확인 예시:
 
@@ -147,7 +148,7 @@ bash install.sh
 
 설치가 하는 일:
 
-1. `skills/`를 `~/.claude/skills/`에 복사
+1. 선택한 agent의 `skills/`를 해당 홈 디렉토리의 `skills/`에 복사
 2. `audit-runtime/`을 `~/.webstart/audit-runtime`에 동기화
 3. Python venv 생성
 4. `~/.webstart/bin/webstart-audit` 생성
@@ -168,6 +169,14 @@ bash scripts/lint-docs.sh
 ```
 
 그리고 Claude Code를 재시작합니다.
+
+### Codex로 설치할 때
+
+```bash
+bash install.sh --agent codex
+```
+
+Codex 모드에서는 `CODEX-GUIDE.md`와 `CODEX-MAPPING.md`를 먼저 읽는 것이 좋습니다.
 
 ---
 
@@ -407,11 +416,13 @@ Critical 버그가 있으면 `blocked`로 기록되고 `/devops`로 넘어가지
 
 ## Claude.ai Projects와의 관계
 
-이 저장소는 기본적으로 Claude Code CLI 중심입니다.
+이 저장소는 기본적으로 Claude Code CLI 중심이지만 Codex 모드도 지원합니다.
 
 - 제작 파이프라인은 Claude.ai Projects에 일부 이식 가능합니다.
 - 검수 파이프라인은 CLI 사용을 권장합니다.
 - 특히 `/audit*` 계열은 `audit runtime`이 필요해서 CLI 쪽이 맞습니다.
+- Codex는 `bash install.sh --agent codex`로 별도 경로를 사용합니다.
+- Codex용 안내는 `CODEX-GUIDE.md`, `CODEX-MAPPING.md`, `CODEX-QUICKSTART.md`를 기준으로 합니다.
 
 ---
 
@@ -424,6 +435,9 @@ Critical 버그가 있으면 `blocked`로 기록되고 `/devops`로 넘어가지
 | `CHANGELOG.md` | 버전별 변경 이력 |
 | `agency-ai-agent-plan.md` | 제작 파이프라인 설계 |
 | `web-audit-agent-plan.md` | 검수 파이프라인 설계 |
+| `CODEX-GUIDE.md` | Codex용 운영 가이드 |
+| `CODEX-MAPPING.md` | Claude ↔ Codex 대응표 |
+| `CODEX-QUICKSTART.md` | Codex 빠른 시작 |
 | `audit-runtime/README.md` | runtime 운영 문서 |
 
 내부 참고 문서:

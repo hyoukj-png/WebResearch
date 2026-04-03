@@ -1,19 +1,56 @@
 #!/bin/bash
 # 1인 웹 에이전시 AI 시스템 — 자동 설치 스크립트
-# 사용법: bash install.sh [--skip-audit-runtime]
+# 사용법: bash install.sh [--agent claude|codex] [--skip-audit-runtime]
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 WEBSTART_HOME="${WEBSTART_HOME:-$HOME/.webstart}"
+CLAUDE_HOME="${CLAUDE_HOME:-$HOME/.claude}"
+CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
+AGENT="${WEBSTART_AGENT:-claude}"
 SKIP_AUDIT_RUNTIME=0
 MIN_NODE_MAJOR=18
 MIN_PYTHON_MAJOR=3
 MIN_PYTHON_MINOR=10
 
-if [ "${1:-}" = "--skip-audit-runtime" ]; then
-  SKIP_AUDIT_RUNTIME=1
-fi
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --agent)
+      shift
+      if [ $# -eq 0 ]; then
+        echo "[오류] --agent 뒤에 claude 또는 codex 를 지정해야 합니다."
+        exit 1
+      fi
+      AGENT="$1"
+      ;;
+    --agent=*)
+      AGENT="${1#*=}"
+      ;;
+    --skip-audit-runtime)
+      SKIP_AUDIT_RUNTIME=1
+      ;;
+    -h|--help)
+      echo "사용법: bash install.sh [--agent claude|codex] [--skip-audit-runtime]"
+      exit 0
+      ;;
+    *)
+      echo "[오류] 알 수 없는 옵션: $1"
+      echo "       사용법: bash install.sh [--agent claude|codex] [--skip-audit-runtime]"
+      exit 1
+      ;;
+  esac
+  shift
+done
+
+case "$AGENT" in
+  claude|codex) ;;
+  *)
+    echo "[오류] 지원하지 않는 agent 입니다: $AGENT"
+    echo "       지원 값: claude, codex"
+    exit 1
+    ;;
+esac
 
 echo ""
 echo "=== 1인 웹 에이전시 AI 시스템 설치 시작 ==="
@@ -54,21 +91,40 @@ check_python_version() {
   fi
 }
 
-check_node_version
-
-# Claude Code 설치 여부 확인
-if ! command -v claude &> /dev/null; then
-  echo "[오류] Claude Code가 설치되어 있지 않습니다."
-  echo "       설치: npm install -g @anthropic-ai/claude-code"
-  exit 1
-fi
+case "$AGENT" in
+  claude)
+    check_node_version
+    # Claude Code 설치 여부 확인
+    if ! command -v claude &> /dev/null; then
+      echo "[오류] Claude Code가 설치되어 있지 않습니다."
+      echo "       설치: npm install -g @anthropic-ai/claude-code"
+      exit 1
+    fi
+    ;;
+  codex)
+    if ! command -v codex &> /dev/null; then
+      echo "[안내] codex 명령을 찾을 수 없지만 Codex용 문서/스킬 설치는 계속 진행합니다."
+    fi
+    ;;
+esac
 
 if [ "$SKIP_AUDIT_RUNTIME" -eq 0 ]; then
   check_python_version
 fi
 
-SKILLS_SRC="$SCRIPT_DIR/skills"
-SKILLS_DEST="$HOME/.claude/skills"
+case "$AGENT" in
+  claude)
+    AGENT_LABEL="Claude Code"
+    SKILLS_SRC="$SCRIPT_DIR/skills"
+    SKILLS_DEST="$CLAUDE_HOME/skills"
+    ;;
+  codex)
+    AGENT_LABEL="Codex"
+    SKILLS_SRC="$SCRIPT_DIR/codex-skills"
+    SKILLS_DEST="$CODEX_HOME/skills"
+    ;;
+esac
+
 AUDIT_RUNTIME_SRC="$SCRIPT_DIR/audit-runtime"
 AUDIT_RUNTIME_DEST="$WEBSTART_HOME/audit-runtime"
 AUDIT_RUNTIME_SETUP="$SCRIPT_DIR/scripts/setup-audit-runtime.sh"
@@ -76,7 +132,7 @@ DOC_LINT_SCRIPT="$SCRIPT_DIR/scripts/lint-docs.sh"
 
 # 스킬 디렉토리 존재 확인
 if [ ! -d "$SKILLS_SRC" ]; then
-  echo "[오류] skills 폴더를 찾을 수 없습니다: $SKILLS_SRC"
+  echo "[오류] 스킬 소스 디렉토리를 찾을 수 없습니다: $SKILLS_SRC"
   exit 1
 fi
 
@@ -97,7 +153,7 @@ for skill_dir in "$SKILLS_SRC"/*/; do
     find "$dest" -name '*.pyc' -type f -delete
   fi
 
-  echo "[완료] /$skill_name 스킬 설치"
+  echo "[완료] /$skill_name 스킬 설치 ($AGENT_LABEL)"
 done
 
 # 공용 audit runtime 복사
@@ -138,32 +194,42 @@ if [ -f "$DOC_LINT_SCRIPT" ]; then
 fi
 
 echo ""
-echo "=== 설치 완료 ($(ls "$SKILLS_SRC" | wc -l | tr -d ' ')개 스킬) ==="
+echo "=== 설치 완료 ($AGENT_LABEL, $(ls "$SKILLS_SRC" | wc -l | tr -d ' ')개 스킬) ==="
 echo ""
 echo "설치된 스킬:"
 echo ""
-echo "  [제작 파이프라인]"
-echo "  /webstart     → 새 프로젝트 폴더 세팅"
-echo "  /pm           → 기획·견적"
-echo "  /design       → 디자인 시스템"
-echo "  /contract     → API 계약 확정 (FE/BE 병렬 전)"
-echo "  /fe           → 프론트엔드 개발"
-echo "  /be           → 백엔드 개발"
-echo "  /qa-check     → QA 체크리스트"
-echo "  /devops       → 배포 설정"
-echo ""
-echo "  [검수 파이프라인]"
-echo "  /audit        → 검수 오케스트레이터 (기존 사이트 분석)"
-echo "  /audit-ux     → UI/UX 리서치 (컬러·폰트·컴포넌트)"
-echo "  /audit-ia     → 정보 구조 분석 (사이트맵·IA)"
-echo "  /audit-tech   → 기술 스택 진단 (프레임워크·성능)"
-echo "  /audit-db     → 데이터 구조 유추 (ERD·API)"
-echo ""
-echo "다음 단계:"
-echo "  1. Claude Code를 재시작하세요."
-echo "  2. 새 프로젝트 시작: /webstart 프로젝트명 nextjs"
-echo "  3. 기존 사이트 분석: /audit https://example.com"
-echo "  4. 고급 audit runtime 확인: ~/.webstart/bin/webstart-audit doctor"
-echo ""
-echo "Claude.ai Projects 설정은 SETUP-GUIDE.md 의 Step 2를 참고하세요."
+if [ "$AGENT" = "claude" ]; then
+  echo "  [제작 파이프라인]"
+  echo "  /webstart     → 새 프로젝트 폴더 세팅"
+  echo "  /pm           → 기획·견적"
+  echo "  /design       → 디자인 시스템"
+  echo "  /contract     → API 계약 확정 (FE/BE 병렬 전)"
+  echo "  /fe           → 프론트엔드 개발"
+  echo "  /be           → 백엔드 개발"
+  echo "  /qa-check     → QA 체크리스트"
+  echo "  /devops       → 배포 설정"
+  echo ""
+  echo "  [검수 파이프라인]"
+  echo "  /audit        → 검수 오케스트레이터 (기존 사이트 분석)"
+  echo "  /audit-ux     → UI/UX 리서치 (컬러·폰트·컴포넌트)"
+  echo "  /audit-ia     → 정보 구조 분석 (사이트맵·IA)"
+  echo "  /audit-tech   → 기술 스택 진단 (프레임워크·성능)"
+  echo "  /audit-db     → 데이터 구조 유추 (ERD·API)"
+  echo ""
+  echo "다음 단계:"
+  echo "  1. Claude Code를 재시작하세요."
+  echo "  2. 새 프로젝트 시작: /webstart 프로젝트명 nextjs"
+  echo "  3. 기존 사이트 분석: /audit https://example.com"
+  echo "  4. 고급 audit runtime 확인: ~/.webstart/bin/webstart-audit doctor"
+  echo ""
+  echo "Claude.ai Projects 설정은 SETUP-GUIDE.md 의 Step 2를 참고하세요."
+else
+  echo "  Codex용 안내:"
+  echo "  1. CODEX-GUIDE.md를 먼저 읽으세요."
+  echo "  2. CODEX-MAPPING.md로 Claude 명령과 Codex 절차를 대응하세요."
+  echo "  3. 프로젝트 루트에서 작업을 시작하세요."
+  echo "  4. 공통 audit runtime 확인: ~/.webstart/bin/webstart-audit doctor"
+  echo ""
+  echo "Codex용 빠른 시작은 CODEX-QUICKSTART.md를 참고하세요."
+fi
 echo ""
