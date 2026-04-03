@@ -69,12 +69,21 @@ def ensure_audit_dirs(project_dir: Path) -> dict[str, Path]:
     return paths
 
 
-def normalize_url(raw_url: str, base: str | None = None) -> str | None:
+def normalize_url(raw_url: str, base: str | None = None, *, upgrade_https: bool = False) -> str | None:
     joined = urljoin(base or raw_url, raw_url)
     parsed = urlparse(joined)
     if parsed.scheme not in {"http", "https"}:
         return None
-    return urlunparse(parsed._replace(fragment=""))
+    clean = urlunparse(parsed._replace(fragment=""))
+    if upgrade_https and parsed.scheme == "http":
+        https_url = urlunparse(parsed._replace(scheme="https", fragment=""))
+        try:
+            resp = httpx.head(https_url, timeout=5.0, follow_redirects=True)
+            if resp.status_code < 400:
+                return https_url
+        except Exception:
+            pass
+    return clean
 
 
 def slugify_url(raw_url: str) -> str:
@@ -365,6 +374,14 @@ def rgb_to_hex(color_value: str) -> str:
 
 def collect_page_snapshot(page: Any, *, current_url: str, depth: int) -> dict[str, Any]:
     page.wait_for_load_state("networkidle")
+    # SPA/CSR 렌더링 대기: 주요 콘텐츠 영역이 나타날 때까지 최대 5초
+    try:
+        page.wait_for_selector(
+            "main, #app > *, #root > *, #__next > *, [role='main'], article",
+            timeout=5000,
+        )
+    except Exception:
+        pass  # 정적 사이트에서는 셀렉터가 없을 수 있음
     return page.evaluate(
         """
         ({ currentUrl, depth }) => {
@@ -553,6 +570,20 @@ def init(
         console.print(f"{label:12} {path}")
 
 
+def load_sitemap_urls(origin: str, max_urls: int = 20) -> list[str]:
+    """sitemap.xml에서 URL 목록을 추출하여 크롤링 커버리지를 높입니다."""
+    try:
+        resp = httpx.get(
+            f"{origin}/sitemap.xml", timeout=10.0, follow_redirects=True
+        )
+        if resp.status_code != 200:
+            return []
+        urls = re.findall(r"<loc>(https?://[^<]+)</loc>", resp.text)
+        return [u for u in urls if same_origin(u, origin)][:max_urls]
+    except Exception:
+        return []
+
+
 @app.command()
 def crawl(
     url: str = typer.Argument(..., help="수집할 공개 URL"),
@@ -560,6 +591,7 @@ def crawl(
     max_pages: int = typer.Option(8, min=1, max=50, help="최대 수집 페이지 수"),
     max_depth: int = typer.Option(2, min=0, max=5, help="링크 탐색 깊이"),
     delay_ms: int = typer.Option(1000, min=0, max=10000, help="페이지 간 대기 시간(ms)"),
+    use_sitemap: bool = typer.Option(True, help="sitemap.xml에서 추가 URL을 탐지합니다"),
 ) -> None:
     """동일 origin 기준으로 다중 페이지 BFS 크롤링을 수행합니다."""
 
@@ -567,7 +599,7 @@ def crawl(
 
     resolved = project_dir.resolve()
     paths = ensure_audit_dirs(resolved)
-    normalized_url = normalize_url(url)
+    normalized_url = normalize_url(url, upgrade_https=True)
     if not normalized_url:
         raise typer.BadParameter("유효한 http/https URL을 입력하세요.")
 
@@ -576,7 +608,22 @@ def crawl(
     parsed = urlparse(normalized_url)
     origin = f"{parsed.scheme}://{parsed.netloc}"
     robots_rules, robots_loaded = load_robots_rules(origin)
+
+    # sitemap.xml에서 추가 URL 탐지
+    sitemap_urls: list[str] = []
+    if use_sitemap:
+        sitemap_urls = load_sitemap_urls(origin, max_urls=max_pages * 2)
+        if sitemap_urls:
+            console.print(f"sitemap.xml에서 {len(sitemap_urls)}개 URL 탐지")
+
     queue: deque[tuple[str, int]] = deque([(normalized_url, 0)])
+    # sitemap URL을 depth 1로 큐에 추가 (이미 큐에 있는 URL은 제외)
+    queued = {normalized_url}
+    for sitemap_url in sitemap_urls:
+        clean = normalize_url(sitemap_url)
+        if clean and clean not in queued:
+            queue.append((clean, 1))
+            queued.add(clean)
     visited: set[str] = set()
     pages: list[dict[str, Any]] = []
     edges: list[dict[str, str]] = []
@@ -1210,14 +1257,28 @@ def report_draft(
     target_url = read_target_url(resolved) or "https://example.com"
     site_name = read_target_name(resolved)
 
-    palette_lines = [
-        f"- {item['role']}: {item['hex']} ({item['value']}, count {item['count']})"
-        for item in ux_summary.get("palette", [])[:5]
-    ] or ["- 추가 수집 필요"]
-    typography_lines = [
-        f"- {item['family']} / {item['size']} / {item['weight']}"
-        for item in ux_summary.get("typography", [])[:4]
-    ] or ["- 추가 수집 필요"]
+    # 컬러 팔레트 — 테이블 형식으로 시각화
+    palette_items = ux_summary.get("palette", [])[:8]
+    if palette_items:
+        palette_table = "| 역할 | HEX | 원본 값 | 사용 빈도 |\n|------|-----|---------|----------|\n"
+        palette_table += "\n".join(
+            f"| {item['role']} | `{item['hex']}` | {item['value']} | {item['count']} |"
+            for item in palette_items
+        )
+    else:
+        palette_table = "추가 수집 필요"
+
+    # 타이포그래피 — 테이블 형식
+    typo_items = ux_summary.get("typography", [])[:6]
+    if typo_items:
+        typo_table = "| 폰트 패밀리 | 크기 | 굵기 | 샘플 태그 | 빈도 |\n|------------|------|------|----------|------|\n"
+        typo_table += "\n".join(
+            f"| {item['family'][:40]} | {item['size']} | {item['weight']} | {item.get('sampleTag', '-')} | {item['count']} |"
+            for item in typo_items
+        )
+    else:
+        typo_table = "추가 수집 필요"
+
     nav_lines = [
         f"- {item['text']} ({item['href']})"
         for item in ia_summary.get("mainNavigation", [])[:8]
@@ -1231,6 +1292,15 @@ def report_draft(
         for endpoint in api_summary.get("uniqueEndpoints", [])[:6]
     ] or ["- 추가 수집 필요"]
 
+    # 스크린샷 참조 링크 생성
+    pages_data: list[dict[str, Any]] = load_json(paths["derived"] / "pages.json", [])
+    screenshot_lines = []
+    for page_data in pages_data[:6]:
+        ss = page_data.get("screenshot")
+        title = page_data.get("title", "페이지")
+        if ss:
+            screenshot_lines.append(f"- [{title}]({ss})")
+
     known_gaps = []
     if not ux_summary:
         known_gaps.append("| UX summary | Unknown | ux-scan 미실행 | webstart-audit ux-scan 실행 |")
@@ -1241,6 +1311,10 @@ def report_draft(
     if api_summary.get("sameOriginApiCalls", 0) == 0:
         known_gaps.append("| API evidence | Hypothesis | 동일 origin API 호출 증거 부족 | 더 많은 사용자 여정 수집 또는 수동 데이터 제공 |")
 
+    screenshots_section = ""
+    if screenshot_lines:
+        screenshots_section = f"""\n### 수집된 페이지 스크린샷\n{chr(10).join(screenshot_lines)}\n"""
+
     report_md = f"""# 웹사이트 검수 종합 보고서
 
 > 분석 대상: {site_name} ({target_url})
@@ -1249,18 +1323,20 @@ def report_draft(
 > 생성 방식: webstart-audit report-draft
 
 ## 1. 분석 요약
-- 수집된 페이지 수: {ia_summary.get('pageCount', ux_summary.get('pageCount', 0))}
-- 주요 네비게이션 항목 수: {len(ia_summary.get('mainNavigation', []))}
-- 감지된 프레임워크 수: {len(tech_summary.get('frameworks', []))}
-- 동일 origin API 호출 수: {api_summary.get('sameOriginApiCalls', 0)}
+| 항목 | 값 |
+|------|----|
+| 수집된 페이지 수 | {ia_summary.get('pageCount', ux_summary.get('pageCount', 0))} |
+| 주요 네비게이션 항목 수 | {len(ia_summary.get('mainNavigation', []))} |
+| 감지된 프레임워크 수 | {len(tech_summary.get('frameworks', []))} |
+| 동일 origin API 호출 수 | {api_summary.get('sameOriginApiCalls', 0)} |
 
 ## 2. 디자인 현황
 ### 컬러 팔레트
-{chr(10).join(palette_lines)}
+{palette_table}
 
 ### 타이포그래피
-{chr(10).join(typography_lines)}
-
+{typo_table}
+{screenshots_section}
 ## 3. 정보 구조
 ### 메인 네비게이션
 {chr(10).join(nav_lines)}
