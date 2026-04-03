@@ -46,10 +46,13 @@ runtime이 없다면 아래를 안내한다:
 bash install.sh
 ```
 
-이후 `_audit/` 폴더 구조를 runtime으로 초기화한다:
+이후 URL 주소를 기반으로 폴더명을 추출하여(예: example.com -> example-com) 폴더를 생성하고, 해당 폴더 내에 `_audit/` 구조를 초기화한다:
 
 ```bash
-~/.webstart/bin/webstart-audit init --project-dir .
+# 예시 URL이 https://example.com 인 경우
+PROJECT_DIR="example-com" 
+mkdir -p "$PROJECT_DIR"
+~/.webstart/bin/webstart-audit init --project-dir "$PROJECT_DIR"
 ```
 
 기본 `target.md` 형식은 아래와 같다:
@@ -72,10 +75,10 @@ bash install.sh
 (분석 시 참고할 사항)
 ```
 
-URL이 제공된 경우 Bash로 runtime crawl을 실행하여 기본 데이터를 자동 수집한다:
+URL이 제공된 경우 생성한 `$PROJECT_DIR`을 타겟으로 runtime crawl을 실행하여 데이터를 자동 수집한다:
 
 ```bash
-~/.webstart/bin/webstart-audit crawl "{URL}" --project-dir . --max-pages 8 --max-depth 2
+~/.webstart/bin/webstart-audit crawl "{URL}" --project-dir "$PROJECT_DIR" --max-pages 8 --max-depth 2
 ```
 
 > `crawl`은 `_audit/target.md`, `_audit/status.json`, `_audit/status.md`,
@@ -196,7 +199,7 @@ Step 1~4의 모든 보고서를 읽는다:
 가능하면 아래 runtime 명령으로 초안을 생성한다:
 
 ```bash
-~/.webstart/bin/webstart-audit report-draft --project-dir .
+~/.webstart/bin/webstart-audit report-draft --project-dir "$PROJECT_DIR"
 ```
 
 runtime은 `_audit/report.md`, `_agency/client-brief.md`, `_audit/status.json`, `_audit/status.md`를 갱신한다.
